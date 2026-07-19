@@ -177,18 +177,20 @@
     <div class="skinname" id="skinNameLabel">-</div>
     <div class="dots" id="dots"></div>
 
-    <button class="designBtn" id="designBtn" type="button">🎨 Tasarla</button>
-
-    <div class="custom-editor" id="customEditor">
-      <div id="customColors"></div>
-      <button class="addColorBtn" id="addColorBtn" type="button">+ Renk Ekle</button>
+    <div class="field" style="display:flex; gap:8px; margin-bottom:16px;">
+      <button class="diff button on" id="modeSingle" style="flex:1; padding:12px; border-radius:12px; border:1px solid var(--stroke); background:rgba(6,4,20,0.5); color:var(--muted); font:600 14px 'Space Grotesk'; cursor:pointer;">🤖 Botlar</button>
+      <button class="diff button" id="modeMulti" style="flex:1; padding:12px; border-radius:12px; border:1px solid var(--stroke); background:rgba(6,4,20,0.5); color:var(--muted); font:600 14px 'Space Grotesk'; cursor:pointer;">🌐 Online</button>
     </div>
 
-    <div class="diff" id="diff">
-      <button type="button" data-d="kolay">Kolay</button>
-      <button type="button" data-d="normal">Normal</button>
-      <button type="button" data-d="zor">Zor</button>
+    <div id="singleOptions">
+      <div class="diff" id="diff">
+        <button type="button" data-d="kolay">Kolay</button>
+        <button type="button" data-d="normal">Normal</button>
+        <button type="button" data-d="zor">Zor</button>
+      </div>
     </div>
+
+    <button class="designBtn" id="designBtn" type="button" style="margin-top:16px;">🎨 Tasarla</button>
 
     <div class="field">
       <div class="soundrow">
@@ -215,12 +217,16 @@
   </div>
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
 /*!
  * YILAN - (c) 2026. All rights reserved.
  */
 "use strict";
 (function(){
+  var socket = io();
+  var myId = null;
+  var otherPlayers = {};
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d', { alpha:false });
   var DPR = Math.min(2, window.devicePixelRatio || 1);
@@ -332,6 +338,7 @@
   function segCountFor(L){ return Math.round(12 + L * 0.32); }
 
   var state = 'menu';
+  var gameMode = 'single'; // 'single' veya 'multi'
   var player = null;
   var bots = [];
   var foods = [];
@@ -739,17 +746,27 @@
     } else {
       SND.setBoost(false);
     }
-    for (var i = 0; i < bots.length; i++) botThink(bots[i], now);
-    if (state === 'play' && player && player.alive) boostEconomy(player, dt, now);
-    for (var j = 0; j < bots.length; j++) boostEconomy(bots[j], dt, now);
-    if (state === 'play' && player && player.alive) stepSnake(player, dt);
-    for (var k = 0; k < bots.length; k++) stepSnake(bots[k], dt);
-    foodMotion(dt);
-    updateEffects(dt);
-    rebuildGrids();
-    collisions(now);
-    eating();
-    maintain();
+    
+    // Sadece single mode ise botları ve yemek mantığını burası yönetir
+    if (gameMode === 'single') {
+        for (var i = 0; i < bots.length; i++) botThink(bots[i], now);
+        if (state === 'play' && player && player.alive) boostEconomy(player, dt, now);
+        for (var j = 0; j < bots.length; j++) boostEconomy(bots[j], dt, now);
+        if (state === 'play' && player && player.alive) stepSnake(player, dt);
+        for (var k = 0; k < bots.length; k++) stepSnake(bots[k], dt);
+        foodMotion(dt);
+        updateEffects(dt);
+        rebuildGrids();
+        collisions(now);
+        eating();
+        maintain();
+    } else {
+        // Multi mode: Sadece yerel efektler ve oyuncu hareketi (tahminleme için)
+        if (state === 'play' && player && player.alive) stepSnake(player, dt);
+        updateEffects(dt);
+        // Multi mode'da yemek yeme/çarpışma server kontrolünde ama görsel yemek hareketi kalabilir
+        foodMotion(dt);
+    }
     var tx = 0, ty = 0;
     if ((state === 'play' || state === 'dead') && player && player.alive){ tx = player.segs[0].x; ty = player.segs[0].y; }
     else if (state === 'menu'){ tx = Math.cos(now*0.0002)*300; ty = Math.sin(now*0.0003)*250; }
@@ -848,9 +865,18 @@
       ctx.beginPath(); ctx.arc(f.x, f.y, f.r * pr * 2.1, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = menuMode ? 0.45 : 1;
     }
-    var all = allSnakes().sort(function(a, b){ return a.length - b.length; });
-    for (var i = 0; i < all.length; i++)
-      drawSnake(all[i], t, viewMinX, viewMaxX, viewMinY, viewMaxY);
+    var all = [];
+    if (player && player.alive) all.push(player);
+    for (var id in otherPlayers) {
+        all.push(otherPlayers[id]);
+    }
+    all.sort(function(a, b){ return a.length - b.length; });
+    
+    for (var i = 0; i < all.length; i++) {
+        var s = all[i];
+        if (s.id === myId) drawSnake(player, t, viewMinX, viewMaxX, viewMinY, viewMaxY);
+        else drawSnake(s, t, viewMinX, viewMaxX, viewMinY, viewMaxY);
+    }
     for (var bi = 0; bi < bursts.length; bi++){
       var b = bursts[bi];
       var ease = 1 - Math.pow(1 - b.p, 2);
@@ -932,13 +958,11 @@
         if (keys['d'] || keys['ArrowRight']) vx += 1;
         var kl = Math.hypot(vx, vy);
         
-        // Klavye kullanıldıysa ezici bir kuvvet olarak fareyi iptal eder
         if (kl > 0.01) { 
           ctrl.angle = Math.atan2(vy, vx); 
           ctrl.hasDir = true; 
           ctrl.useMouse = false;
         } 
-        // Klavye yoksa sürekli farenin kaydettiği güncel x/y üzerinden açıyı set eder
         else if (ctrl.useMouse) { 
           ctrl.angle = Math.atan2(ctrl.mouseY - H/2, ctrl.mouseX - W/2); 
           ctrl.hasDir = true; 
@@ -946,6 +970,26 @@
       }
 
       updateWorld(dt, now);
+
+      if (state === 'play' && player && gameMode === 'multi'){
+        socket.emit('update', {
+            x: player.segs[0].x,
+            y: player.segs[0].y,
+            angle: player.angle,
+            segs: player.segs,
+            length: player.length,
+            boosting: player.boosting
+        });
+
+        var head = player.segs[0];
+        for (var i = 0; i < foods.length; i++) {
+            var f = foods[i];
+            var dx = head.x - f.x, dy = head.y - f.y;
+            if (dx*dx + dy*dy < (player.r + f.r + 5) * (player.r + f.r + 5)) {
+                socket.emit('eatFood', f.id);
+            }
+        }
+      }
       render(t);
       updateHUD();
     } catch (err) {
@@ -957,9 +1001,24 @@
   function startGame(){
     SND.ensure(); SND.startMusic();
     var nick = (el.nick.value || '').trim().slice(0, 14) || 'sen';
-    var p = randSpawnPos();
-    player = makeSnake(p.x, p.y, rand(0, Math.PI * 2), 10, chosenSkin, nick, true);
-    cam.x = player.segs[0].x; cam.y = player.segs[0].y;
+    
+    if (gameMode === 'multi') {
+        socket.emit('join', { name: nick, skin: chosenSkin });
+        // Multiplayer'da yılanı init'ten sonra server oluşturacak, 
+        // ama kamera için geçici bir başlangıç objesi kuralım
+        var p = { x:0, y:0 };
+        player = makeSnake(p.x, p.y, 0, 10, chosenSkin, nick, true);
+    } else {
+        var p = randSpawnPos();
+        player = makeSnake(p.x, p.y, rand(0, Math.PI * 2), 10, chosenSkin, nick, true);
+        cam.x = player.segs[0].x; cam.y = player.segs[0].y;
+        // Botları ve yemekleri sıfırla
+        bots = [];
+        foods = [];
+        spawnFood(FOOD_TARGET);
+        for (var b = 0; b < BOT_COUNT; b++) spawnBot();
+    }
+
     bestRank = 99;
     ctrl.hasDir = false;
     touchBoost = mouseBoost = keyBoost = false;
@@ -972,6 +1031,44 @@
     el.hud.classList.remove('hidden');
     el.gameui.classList.remove('hidden');
   }
+
+  socket.on('init', function(data) {
+    if (gameMode !== 'multi') return;
+    myId = data.id;
+    WORLD.r = data.worldSize;
+    foods = data.foods;
+    player.segs[0].x = data.players[myId].x;
+    player.segs[0].y = data.players[myId].y;
+    // Mevcut oyuncuları ekle
+    for (var id in data.players) {
+        if (id !== myId) otherPlayers[id] = data.players[id];
+    }
+  });
+
+  socket.on('stateUpdate', function(players) {
+    if (gameMode !== 'multi') return;
+    for (var id in players) {
+        if (id === myId) {
+            player.length = players[id].length;
+        } else {
+            otherPlayers[id] = players[id];
+        }
+    }
+  });
+
+  socket.on('newPlayer', function(p) {
+    otherPlayers[p.id] = p;
+  });
+
+  socket.on('playerDisconnected', function(id) {
+    delete otherPlayers[id];
+  });
+
+  socket.on('foodEaten', function(data) {
+    foods = foods.filter(f => f.id !== data.foodId);
+    foods.push(data.newFood);
+    if (data.playerId === myId) SND.pop();
+  });
   function endGame(msg){
     state = 'dead';
     canvas.style.pointerEvents = 'none';
@@ -1114,6 +1211,8 @@
     el.overMsg = document.getElementById('overMsg');
     el.finalLen = document.getElementById('finalLen');
     el.finalRank = document.getElementById('finalRank');
+    el.modeSingle = document.getElementById('modeSingle');
+    el.modeMulti = document.getElementById('modeMulti');
     el.nick = document.getElementById('nick');
     el.gameui = document.getElementById('gameui');
     el.muteBtn = document.getElementById('muteBtn');
@@ -1223,6 +1322,20 @@
     on('designBtn','click', function(){
       chosenSkin = CUSTOM_SKIN_IDX;
       refreshSkinUI();
+    });
+
+    on('modeSingle', 'click', function() {
+        gameMode = 'single';
+        el.modeSingle.classList.add('on');
+        el.modeMulti.classList.remove('on');
+        document.getElementById('singleOptions').style.display = 'block';
+    });
+
+    on('modeMulti', 'click', function() {
+        gameMode = 'multi';
+        el.modeMulti.classList.add('on');
+        el.modeSingle.classList.remove('on');
+        document.getElementById('singleOptions').style.display = 'none';
     });
 
     on('addColorBtn','click', function(){
