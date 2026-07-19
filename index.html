@@ -22,7 +22,7 @@
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--bg0);
     font-family:"Space Grotesk",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);
-    touch-action:none;}
+    touch-action:none;overscroll-behavior:none;-webkit-user-select:none;user-select:none;}
   canvas#game{display:block;position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;}
 
   .hud{position:fixed;z-index:5;pointer-events:none;}
@@ -233,6 +233,18 @@
     canvas.height = Math.floor(H * DPR);
   }
   window.addEventListener('resize', resize);
+  window.addEventListener('keydown', function(e){
+    if (e.ctrlKey && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_' || e.key === '0' || e.code === 'NumpadAdd' || e.code === 'NumpadSubtract')) {
+      e.preventDefault();
+    }
+  });
+  window.addEventListener('wheel', function(e){
+    if (e.ctrlKey) e.preventDefault();
+  }, { passive:false });
+  window.addEventListener('touchmove', function(e){
+    if (e.touches && e.touches.length > 1) e.preventDefault();
+  }, { passive:false });
+  window.addEventListener('gesturestart', function(e){ e.preventDefault(); }, { passive:false });
   resize();
 
   var WORLD = { r: 3400 };
@@ -804,13 +816,12 @@
     var menuMode = (state === 'menu');
     if (menuMode) ctx.globalAlpha = 0.45;
 
-    var s = (state === 'play' && player && player.alive)
-      ? clamp(1.0 - (player.r - 6) * 0.012, 0.62, 1.0) : 0.9;
+    var viewScale = 1.0;
     ctx.save();
     ctx.translate(W / 2, H / 2);
-    ctx.scale(s, s);
+    ctx.scale(viewScale, viewScale);
     ctx.translate(-cam.x, -cam.y);
-    var halfW = (W / 2) / s + 120, halfH = (H / 2) / s + 120;
+    var halfW = (W / 2) / viewScale + 120, halfH = (H / 2) / viewScale + 120;
     var viewMinX = cam.x - halfW, viewMaxX = cam.x + halfW;
     var viewMinY = cam.y - halfH, viewMaxY = cam.y + halfH;
 
