@@ -192,6 +192,11 @@
 
     <button class="designBtn" id="designBtn" type="button" style="margin-top:16px;">🎨 Tasarla</button>
 
+    <div class="custom-editor" id="customEditor">
+      <div id="customColors"></div>
+      <button class="addColorBtn" id="addColorBtn" type="button">+ Renk Ekle</button>
+    </div>
+
     <div class="field">
       <div class="soundrow">
         <button class="soundbtn" id="muteBtn" type="button">Acik</button>
@@ -1135,7 +1140,7 @@
   }
 
   function refreshSkinUI(){
-    if (!skinNameEl || !dotsEl) return;
+    if (!skinNameEl || !dotsEl || !customEditorEl) return;
     skinNameEl.textContent = SKINS[chosenSkin].name;
     var ds = dotsEl.querySelectorAll('.dot');
     for (var i = 0; i < ds.length; i++){
