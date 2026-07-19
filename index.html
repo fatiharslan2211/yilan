@@ -1135,6 +1135,7 @@
   }
 
   function refreshSkinUI(){
+    if (!skinNameEl || !dotsEl) return;
     skinNameEl.textContent = SKINS[chosenSkin].name;
     var ds = dotsEl.querySelectorAll('.dot');
     for (var i = 0; i < ds.length; i++){
