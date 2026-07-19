@@ -93,6 +93,7 @@
     background:rgba(6,4,20,.5);color:var(--muted);font:600 14px "Space Grotesk",sans-serif;cursor:pointer;pointer-events:auto;
     transition:border-color .15s,color .15s,background .15s;}
   .diff button.on{border-color:var(--cyan);color:var(--ink);background:rgba(34,230,255,.14);}
+  button.diff.on{border-color:var(--cyan) !important;color:var(--ink) !important;background:rgba(34,230,255,.14) !important;}
 
   .soundrow{display:flex;align-items:center;gap:12px;}
   .soundbtn{padding:11px 14px;border-radius:12px;border:1px solid var(--stroke);background:rgba(6,4,20,.5);
@@ -222,15 +223,24 @@
   </div>
 </div>
 
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<!-- socket.io istemcisi sunucunun kendisinden gelir (CDN bagimliligi yok, surum her zaman eslesir) -->
+<script src="/socket.io/socket.io.js"></script>
 <script>
 /*!
  * YILAN - (c) 2026. All rights reserved.
  */
 "use strict";
 (function(){
-  var socket = io({ transports: ['websocket', 'polling'] });
+  // socket.io CDN'i yuklenemezse oyun (tek kisilik mod) yine de calissin
+  var socket;
+  try {
+    socket = io({ transports: ['websocket', 'polling'] });
+  } catch (e) {
+    socket = { on: function(){}, emit: function(){}, connected: false };
+    if (window.console) console.warn('socket.io yuklenemedi, online mod devre disi:', e);
+  }
   var myId = null;
+  var netTick = 0;
   var otherPlayers = {};
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d', { alpha:false });
@@ -575,13 +585,17 @@
       if (!foods[f].dead) gridPush(foodGrid, foods[f].x, foods[f].y, foods[f]);
     }
   }
+  // Menu her zaman yerel (bot) dunyasini simule eder; oyun icinde moda gore ayrilir
+  function usingLocalWorld(){
+    return gameMode === 'single' || state === 'menu';
+  }
   function allSnakes(){
     var a = [];
-    if (player && player.alive) a.push(player);
-    if (gameMode === 'multi'){
-      for (var id in otherPlayers) a.push(otherPlayers[id]);
-    } else {
+    if (player && player.alive && state !== 'menu') a.push(player);
+    if (usingLocalWorld()){
       for (var i = 0; i < bots.length; i++) if (bots[i].alive) a.push(bots[i]);
+    } else {
+      for (var id in otherPlayers) a.push(otherPlayers[id]);
     }
     return a;
   }
@@ -756,8 +770,8 @@
       SND.setBoost(false);
     }
     
-    // Sadece single mode ise botları ve yemek mantığını burası yönetir
-    if (gameMode === 'single') {
+    // Yerel dunya (tek kisilik oyun veya menu arka plani): botlar + yerel yem mantigi
+    if (usingLocalWorld()) {
         for (var i = 0; i < bots.length; i++) botThink(bots[i], now);
         if (state === 'play' && player && player.alive) boostEconomy(player, dt, now);
         for (var j = 0; j < bots.length; j++) boostEconomy(bots[j], dt, now);
@@ -800,7 +814,7 @@
   function drawSnake(s, t, viewMinX, viewMaxX, viewMinY, viewMaxY){
     var segs = s.segs, n = segs.length;
     if (!n) return;
-    var sk = SKINS[s.skin] || SKINS[0];
+    var sk = s.customSkin || SKINS[s.skin] || SKINS[0];
     var glow = (sk.glow && s.isPlayer) || (s.isPlayer && s.boosting);
     if (glow){ ctx.shadowColor = sk.rep; ctx.shadowBlur = s.boosting ? 22 : 16; }
     for (var i = n - 1; i >= 0; i--){
@@ -878,17 +892,18 @@
       ctx.beginPath(); ctx.arc(f.x, f.y, f.r * pr * 2.1, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = menuMode ? 0.45 : 1;
     }
+    // Cizim listesi: yerel dunyada botlar, online'da diger oyuncular
     var all = [];
-    if (player && player.alive) all.push(player);
-    for (var id in otherPlayers) {
-        all.push(otherPlayers[id]);
+    if (player && player.alive && state !== 'menu') all.push(player);
+    if (usingLocalWorld()){
+      for (var b2 = 0; b2 < bots.length; b2++) if (bots[b2].alive) all.push(bots[b2]);
+    } else {
+      for (var id in otherPlayers) all.push(otherPlayers[id]);
     }
     all.sort(function(a, b){ return a.length - b.length; });
-    
+
     for (var i = 0; i < all.length; i++) {
-        var s = all[i];
-        if (s.id === myId) drawSnake(player, t, viewMinX, viewMaxX, viewMinY, viewMaxY);
-        else drawSnake(s, t, viewMinX, viewMaxX, viewMinY, viewMaxY);
+        drawSnake(all[i], t, viewMinX, viewMaxX, viewMinY, viewMaxY);
     }
     for (var bi = 0; bi < bursts.length; bi++){
       var b = bursts[bi];
@@ -984,22 +999,37 @@
 
       updateWorld(dt, now);
 
-      if (state === 'play' && player && gameMode === 'multi'){
-        socket.emit('update', {
-            x: player.segs[0].x,
-            y: player.segs[0].y,
-            angle: player.angle,
-            segs: player.segs,
-            length: player.length,
-            boosting: player.boosting
-        });
+      if (state === 'play' && player && player.alive && gameMode === 'multi'){
+        // Konumu 20Hz'de, yuvarlanmis koordinatlarla gonder (bant genisligi icin).
+        // NOT: length gonderilmez - uzunlukta sunucu otoritedir.
+        if ((netTick++ % 3) === 0){
+          var segsOut = [];
+          for (var si = 0; si < player.segs.length; si++){
+            segsOut.push({ x: Math.round(player.segs[si].x), y: Math.round(player.segs[si].y) });
+          }
+          socket.emit('update', {
+              x: segsOut[0].x,
+              y: segsOut[0].y,
+              angle: player.angle,
+              segs: segsOut,
+              boosting: !!player.boosting
+          });
+        }
 
-        var head = player.segs[0];
-        for (var i = 0; i < foods.length; i++) {
+        // Yem yeme: miknatis efekti + iyimser yerel silme, sunucu onayi arkadan gelir
+        var head = player.segs[0], pull = player.r * 4.5;
+        for (var i = foods.length - 1; i >= 0; i--) {
             var f = foods[i];
-            var dx = head.x - f.x, dy = head.y - f.y;
-            if (dx*dx + dy*dy < (player.r + f.r + 5) * (player.r + f.r + 5)) {
-                socket.emit('eatFood', f.id);
+            var dx = head.x - f.x, dy = head.y - f.y, d2 = dx*dx + dy*dy;
+            if (d2 < (player.r + pull) * (player.r + pull)){
+                var dd = Math.sqrt(d2) || 1;
+                f.x += dx / dd * Math.min(6, dd) * 0.35;
+                f.y += dy / dd * Math.min(6, dd) * 0.35;
+                if (dd < player.r + f.r + 3){
+                    foods.splice(i, 1);
+                    SND.pop();
+                    socket.emit('eatFood', f.id);
+                }
             }
         }
       }
@@ -1016,12 +1046,23 @@
     var nick = (el.nick.value || '').trim().slice(0, 14) || 'sen';
     
     if (gameMode === 'multi') {
-        socket.emit('join', { name: nick, skin: chosenSkin });
-        // Multiplayer'da yılanı init'ten sonra server oluşturacak, 
-        // ama kamera için geçici bir başlangıç objesi kuralım
-        var p = { x:0, y:0 };
-        player = makeSnake(p.x, p.y, 0, 10, chosenSkin, nick, true);
+        // Online dunya: yerel botlar/yemler temizlenir, sunucu init ile doldurur
+        otherPlayers = {};
+        bots = [];
+        foods = [];
+        myId = null;
+        netTick = 0;
+        var sk = SKINS[chosenSkin];
+        socket.emit('join', {
+            name: nick,
+            skin: chosenSkin,
+            rep: sk.rep,
+            skinColors: (chosenSkin === CUSTOM_SKIN_IDX) ? sk.colors.slice() : null
+        });
+        // Yilanin gercek konumu init'ten sonra sunucudan gelecek
+        player = makeSnake(0, 0, 0, 10, chosenSkin, nick, true);
     } else {
+        otherPlayers = {};
         var p = randSpawnPos();
         player = makeSnake(p.x, p.y, rand(0, Math.PI * 2), 10, chosenSkin, nick, true);
         cam.x = player.segs[0].x; cam.y = player.segs[0].y;
@@ -1048,7 +1089,12 @@
   function syncOtherPlayer(p){
     if (!p) return p;
     p.isPlayer = false;
+    p.alive = true;
     p.r = radiusFor(p.length || 10);
+    // Ozel skin renkleri geldiyse o oyuncuya ozel skin kur
+    if (p.skinColors && p.skinColors.length){
+      p.customSkin = { name:'Custom', type:'custom', colors:p.skinColors, rep:p.skinColors[0], glow:true };
+    }
     var incoming = (p.segs && p.segs.length) ? p.segs : [{ x: p.x || 0, y: p.y || 0 }];
     var prev = otherPlayers[p.id];
     if (prev && prev.segs && prev.segs.length){
@@ -1079,31 +1125,44 @@
   }
 
   socket.on('init', function(data) {
-    if (gameMode !== 'multi') return;
+    if (gameMode !== 'multi' || !player || !data) return;
     myId = data.id;
     player.id = myId;
-    WORLD.r = data.worldSize;
-    foods = data.foods;
-    player.segs[0].x = data.players[myId].x;
-    player.segs[0].y = data.players[myId].y;
-    // Mevcut oyuncuları ekle
+    if (data.worldSize) WORLD.r = data.worldSize;
+    foods = data.foods || [];
+    var me = data.players && data.players[myId];
+    if (me){
+      // Tum govdeyi spawn noktasina tasi, kamerayi oraya kilitle
+      for (var i = 0; i < player.segs.length; i++){
+        player.segs[i].x = me.x;
+        player.segs[i].y = me.y;
+      }
+      player.angle = player.target = me.angle;
+      cam.x = me.x; cam.y = me.y;
+    }
+    otherPlayers = {};
     for (var id in data.players) {
         if (id !== myId) otherPlayers[id] = syncOtherPlayer(data.players[id]);
     }
   });
 
   socket.on('stateUpdate', function(players) {
-    if (gameMode !== 'multi') return;
+    if (gameMode !== 'multi' || !myId) return;
     for (var id in players) {
         if (id === myId) {
-            player.length = players[id].length;
+            if (player) player.length = players[id].length;
         } else {
             otherPlayers[id] = syncOtherPlayer(players[id]);
         }
     }
+    // Anlik goruntude olmayan oyunculari temizle (kacirilan olaylara karsi)
+    for (var oid in otherPlayers) {
+        if (!players[oid]) delete otherPlayers[oid];
+    }
   });
 
   socket.on('newPlayer', function(p) {
+    if (gameMode !== 'multi' || !p || p.id === myId) return;
     otherPlayers[p.id] = syncOtherPlayer(p);
   });
 
@@ -1112,17 +1171,37 @@
   });
 
   socket.on('playerDied', function(id) {
+    if (gameMode !== 'multi') return;
     if (id === myId) {
+      if (player) {
+        player.alive = false;
+        var hp = player.segs[0];
+        bursts.push({ x:hp.x, y:hp.y, startR:player.r, max:player.r*11, p:0,
+          color:(player.customSkin || SKINS[player.skin]).rep });
+      }
       if (state === 'play') { SND.death(); endGame("Bir yilana carptin."); }
     } else {
+      var op = otherPlayers[id];
+      if (op && op.segs && op.segs.length) {
+        var rep = (op.customSkin || SKINS[op.skin] || SKINS[0]).rep;
+        bursts.push({ x:op.segs[0].x, y:op.segs[0].y, startR:op.r || 8, max:(op.r || 8)*11, p:0, color:rep });
+      }
       delete otherPlayers[id];
     }
   });
 
   socket.on('foodEaten', function(data) {
-    foods = foods.filter(f => f.id !== data.foodId);
-    foods.push(data.newFood);
-    if (data.playerId === myId) SND.pop();
+    if (gameMode !== 'multi' || !data) return;
+    for (var i = foods.length - 1; i >= 0; i--) {
+        if (foods[i].id === data.foodId){ foods.splice(i, 1); break; }
+    }
+    if (data.newFood) foods.push(data.newFood);
+    // Kendi yeme sesimiz iyimser olarak zaten calindi; tekrar calma
+  });
+
+  socket.on('foodsSpawned', function(arr) {
+    if (gameMode !== 'multi' || !arr) return;
+    for (var i = 0; i < arr.length; i++) foods.push(arr[i]);
   });
   function endGame(msg){
     state = 'dead';
@@ -1142,6 +1221,9 @@
   function toMenu(){
     state = 'menu';
     canvas.style.pointerEvents = 'none';
+    // Online kalintilarini temizle; menu arka plani yerel bot dunyasiyla dolar
+    otherPlayers = {};
+    myId = null;
     el.over.classList.add('hidden');
     el.gameui.classList.add('hidden');
     el.menu.classList.remove('hidden');
