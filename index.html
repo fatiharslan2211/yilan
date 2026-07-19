@@ -578,7 +578,11 @@
   function allSnakes(){
     var a = [];
     if (player && player.alive) a.push(player);
-    for (var i = 0; i < bots.length; i++) if (bots[i].alive) a.push(bots[i]);
+    if (gameMode === 'multi'){
+      for (var id in otherPlayers) a.push(otherPlayers[id]);
+    } else {
+      for (var i = 0; i < bots.length; i++) if (bots[i].alive) a.push(bots[i]);
+    }
     return a;
   }
 
@@ -792,7 +796,9 @@
   }
 
   function drawSnake(s, t, viewMinX, viewMaxX, viewMinY, viewMaxY){
-    var sk = SKINS[s.skin], segs = s.segs, n = segs.length;
+    var segs = s.segs, n = segs.length;
+    if (!n) return;
+    var sk = SKINS[s.skin] || SKINS[0];
     var glow = (sk.glow && s.isPlayer) || (s.isPlayer && s.boosting);
     if (glow){ ctx.shadowColor = sk.rep; ctx.shadowBlur = s.boosting ? 22 : 16; }
     for (var i = n - 1; i >= 0; i--){
@@ -863,7 +869,7 @@
     for (var fi = 0; fi < foods.length; fi++){
       var f = foods[fi];
       if (f.x < viewMinX || f.x > viewMaxX || f.y < viewMinY || f.y > viewMaxY) continue;
-      var pr = 1 + Math.sin(t * 3 + f.phase) * 0.14;
+      var pr = 1 + Math.sin(t * 3 + (f.phase || 0)) * 0.14;
       ctx.fillStyle = f.color;
       ctx.beginPath(); ctx.arc(f.x, f.y, f.r * pr, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 0.25;
@@ -1037,16 +1043,25 @@
     el.gameui.classList.remove('hidden');
   }
 
+  function syncOtherPlayer(p){
+    if (!p) return p;
+    p.isPlayer = false;
+    p.r = radiusFor(p.length || 10);
+    if (!p.segs || !p.segs.length) p.segs = [{ x: p.x || 0, y: p.y || 0 }];
+    return p;
+  }
+
   socket.on('init', function(data) {
     if (gameMode !== 'multi') return;
     myId = data.id;
+    player.id = myId;
     WORLD.r = data.worldSize;
     foods = data.foods;
     player.segs[0].x = data.players[myId].x;
     player.segs[0].y = data.players[myId].y;
     // Mevcut oyuncuları ekle
     for (var id in data.players) {
-        if (id !== myId) otherPlayers[id] = data.players[id];
+        if (id !== myId) otherPlayers[id] = syncOtherPlayer(data.players[id]);
     }
   });
 
@@ -1056,16 +1071,20 @@
         if (id === myId) {
             player.length = players[id].length;
         } else {
-            otherPlayers[id] = players[id];
+            otherPlayers[id] = syncOtherPlayer(players[id]);
         }
     }
   });
 
   socket.on('newPlayer', function(p) {
-    otherPlayers[p.id] = p;
+    otherPlayers[p.id] = syncOtherPlayer(p);
   });
 
   socket.on('playerDisconnected', function(id) {
+    delete otherPlayers[id];
+  });
+
+  socket.on('playerDied', function(id) {
     delete otherPlayers[id];
   });
 

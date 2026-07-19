@@ -43,7 +43,8 @@ function spawnFood() {
         y: Math.sin(a) * d,
         r: 3 + Math.random() * 2,
         val: 1,
-        color: `hsl(${Math.floor(Math.random() * 360)}, 90%, 62%)`
+        color: `hsl(${Math.floor(Math.random() * 360)}, 90%, 62%)`,
+        phase: Math.random() * 6
     });
 }
 
