@@ -24,6 +24,8 @@ app.use(express.static(path.join(__dirname, '.')));
 // Oyun Sabitleri
 const WORLD_SIZE = 3400;
 const FOOD_COUNT = 300;
+const SNAKE_RADIUS = 8;   // client radiusFor() ile ayni
+const PROTECT_MS = 1400;  // client PROTECT ile ayni (spawn korumasi)
 
 // Oyun Durumu
 let players = {};
@@ -62,7 +64,8 @@ io.on('connection', (socket) => {
             length: 10,
             segs: [], // Sunucu tarafında takip edilecek segmentler
             alive: true,
-            score: 0
+            score: 0,
+            spawnTime: Date.now()
         };
         
         // Yeni oyuncuya mevcut durumu gönder
@@ -129,8 +132,61 @@ io.on('connection', (socket) => {
     });
 });
 
+// Bir oyuncuyu öldür: skoru kaydet, herkese bildir
+async function killPlayer(id) {
+    const p = players[id];
+    if (!p) return;
+    console.log(`${p.name} öldü (çarpışma). Skor: ${p.score}`);
+    if (p.score > 10) {
+        try {
+            await supabase.from('leaderboard').insert([
+                { name: p.name, score: Math.floor(p.score) }
+            ]);
+        } catch (e) {
+            console.error('Skor kaydedilemedi:', e);
+        }
+    }
+    delete players[id];
+    io.emit('playerDied', id);
+}
+
+// Sunucu tarafında çarpışma kontrolü (otoriter): baş, başka bir yılanın
+// gövdesine veya harita sınırına çarparsa o oyuncu ölür.
+function checkCollisions() {
+    const ids = Object.keys(players);
+    const now = Date.now();
+    const dead = [];
+    for (let i = 0; i < ids.length; i++) {
+        const a = players[ids[i]];
+        if (!a || !a.segs || !a.segs.length) continue;
+        if (now - a.spawnTime < PROTECT_MS) continue; // spawn koruması
+        const head = a.segs[0];
+        // Harita sınırı
+        if (Math.hypot(head.x, head.y) > WORLD_SIZE - SNAKE_RADIUS) {
+            dead.push(ids[i]);
+            continue;
+        }
+        // Diğer yılanların gövdeleri
+        const rr = SNAKE_RADIUS * 0.72 + SNAKE_RADIUS;
+        let hit = false;
+        for (let j = 0; j < ids.length && !hit; j++) {
+            if (i === j) continue;
+            const b = players[ids[j]];
+            if (!b || !b.segs) continue;
+            for (let k = 0; k < b.segs.length; k += 2) {
+                const seg = b.segs[k];
+                const dx = seg.x - head.x, dy = seg.y - head.y;
+                if (dx * dx + dy * dy < rr * rr) { hit = true; break; }
+            }
+        }
+        if (hit) dead.push(ids[i]);
+    }
+    for (const id of dead) killPlayer(id);
+}
+
 // Broadcast state to all players every 50ms (20fps)
 setInterval(() => {
+    checkCollisions();
     io.emit('stateUpdate', players);
 }, 50);
 

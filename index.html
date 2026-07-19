@@ -775,6 +775,8 @@
         updateEffects(dt);
         // Multi mode'da yemek yeme/çarpışma server kontrolünde ama görsel yemek hareketi kalabilir
         foodMotion(dt);
+        // Diğer oyuncuları sunucu anlık görüntüsüne doğru yumuşat (20fps zıplamayı önler)
+        interpolateOthers(dt);
     }
     var tx = 0, ty = 0;
     if ((state === 'play' || state === 'dead') && player && player.alive){ tx = player.segs[0].x; ty = player.segs[0].y; }
@@ -1047,8 +1049,33 @@
     if (!p) return p;
     p.isPlayer = false;
     p.r = radiusFor(p.length || 10);
-    if (!p.segs || !p.segs.length) p.segs = [{ x: p.x || 0, y: p.y || 0 }];
+    var incoming = (p.segs && p.segs.length) ? p.segs : [{ x: p.x || 0, y: p.y || 0 }];
+    var prev = otherPlayers[p.id];
+    if (prev && prev.segs && prev.segs.length){
+      // Görünen gövdeyi koru, en son anlık görüntüyü hedef yap (yumuşatma için)
+      p.segs = prev.segs;
+      p.targetSegs = incoming;
+    } else {
+      p.segs = incoming.map(function(s){ return { x:s.x, y:s.y }; });
+      p.targetSegs = incoming;
+    }
     return p;
+  }
+
+  // Diğer oyuncuların görünen segmentlerini sunucudan gelen hedefe doğru kaydır
+  function interpolateOthers(dt){
+    for (var oid in otherPlayers){
+      var op = otherPlayers[oid];
+      var tgt = op.targetSegs;
+      if (!tgt || !tgt.length) continue;
+      while (op.segs.length < tgt.length){ var l = op.segs[op.segs.length-1] || tgt[0]; op.segs.push({ x:l.x, y:l.y }); }
+      while (op.segs.length > tgt.length) op.segs.pop();
+      var f = Math.min(1, 0.35 * dt);
+      for (var i = 0; i < op.segs.length; i++){
+        op.segs[i].x += (tgt[i].x - op.segs[i].x) * f;
+        op.segs[i].y += (tgt[i].y - op.segs[i].y) * f;
+      }
+    }
   }
 
   socket.on('init', function(data) {
@@ -1085,7 +1112,11 @@
   });
 
   socket.on('playerDied', function(id) {
-    delete otherPlayers[id];
+    if (id === myId) {
+      if (state === 'play') { SND.death(); endGame("Bir yilana carptin."); }
+    } else {
+      delete otherPlayers[id];
+    }
   });
 
   socket.on('foodEaten', function(data) {
